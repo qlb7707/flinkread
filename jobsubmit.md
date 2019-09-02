@@ -377,7 +377,7 @@ public class JobSubmitHeaders implements MessageHeaders<JobSubmitRequestBody, Jo
 
 来看看这个类的引用
 
-![1567010810677](typora-user-images\1567010810677.png)
+![1567010810677](./typora-user-images/1567010810677.png)
 
 
 
@@ -445,7 +445,7 @@ CompletableFuture<Acknowledge> submitJob(
 
 发现它是一个接口的抽象方法， 这个接口有下面几种实现
 
-![1567088000754](typora-user-images\1567088000754.png)
+![1567088000754](./typora-user-images/1567088000754.png)
 
 刚刚的getway是怎么传进来的，这里不仔细研究，也是一个很长的故事，后面再仔细看一下
 
@@ -700,7 +700,7 @@ void start(LeaderContender contender) throws Exception;
 
 是个接口方法， 看看有哪些实现
 
-![1567096753386](typora-user-images\1567096753386.png)
+![1567096753386](./typora-user-images/1567096753386.png)
 
 不知道用了哪个，都有可能
 
@@ -818,7 +818,7 @@ public Dispatcher(
 
 step out
 
-![1567097331706](typora-user-images\1567097331706.png)
+![1567097331706](./typora-user-images/1567097331706.png)
 
 又有两个地方用到了，就是刚刚的`MiniDispatcher` 和`StandaloneDispatcher`
 
@@ -862,7 +862,7 @@ public StandaloneDispatcher(
 
 继续还是有两个地方
 
-![1567097651275](typora-user-images\1567097651275.png)
+![1567097651275](./typora-user-images/1567097651275.png)
 
 
 
@@ -1075,7 +1075,7 @@ public DispatcherResourceManagerComponent<T> create(
 
 继续,发现有两个地方引用， 先看第一个`ClusterEntrypoint`
 
-![1567419080553](typora-user-images\1567419080553.png)
+![1567419080553](./typora-user-images/1567419080553.png)
 
 
 
@@ -1273,21 +1273,21 @@ public void start() throws Exception {
 
 回过头我们研究一下minicluster是什么时候使用的，它有一个start方法， 我们看看它是什么时候使用的
 
-![1567421515034](typora-user-images\1567421515034.png)
+![1567421515034](./typora-user-images/1567421515034.png)
 
 
 
-![1567421588937](typora-user-images\1567421588937.png)
+![1567421588937](./typora-user-images/1567421588937.png)
 
 应该是本地运行时才用到，我们就不看了，再看看`SessionDispatcherWithUUIDFactory`，
 
-![1567424316110](typora-user-images\1567424316110.png)
+![1567424316110](./typora-user-images/1567424316110.png)
 
 属于测试代码，忽略掉， 再看看`MiniDispatcher`
 
-![1567424953753](typora-user-images\1567424953753.png)
+![1567424953753](./typora-user-images/1567424953753.png)
 
-![1567424984395](typora-user-images\1567424984395.png)
+![1567424984395](./typora-user-images/1567424984395.png)
 
 总共有三处引用，先看看`JobDispatcherFactory` 
 
