@@ -306,7 +306,6 @@ final CompletableFuture<JobSubmitResponseBody> submissionFuture = requestFuture.
 				requestAndFileUploads.f1,
 				isConnectionProblemOrServiceUnavailable())
 		);
-		//4. 1和
  ```
 
 我们看到一个`JobSubmitHeaders`，看看它是什么
@@ -383,7 +382,7 @@ public class JobSubmitHeaders implements MessageHeaders<JobSubmitRequestBody, Jo
 
 有一个`JobSubmitHandler`看起来就是我们要的
 
-它有一个`handleRequest`方法，证书处理submit请求的地方
+它有一个`handleRequest`方法，正是处理submit请求的地方
 
 ```java
 protected CompletableFuture<JobSubmitResponseBody> handleRequest(@Nonnull HandlerRequest<JobSubmitRequestBody, EmptyMessageParameters> request, @Nonnull DispatcherGateway gateway) throws RestHandlerException {
@@ -2259,4 +2258,4 @@ public CompletableFuture<Acknowledge> submitTask(
 
 
 
-这样job就运行起来了
+至此job的各个Task就运行起来了
