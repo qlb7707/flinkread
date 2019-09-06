@@ -1,5 +1,9 @@
 # statebackend是如何从配置中创建的
 
+[TOC]
+
+
+
 ### winodw state
 
 我们知道flink window内部元素是存储在state里的
@@ -7,6 +11,10 @@
 那我们先看看window是如何创建state的，再以此为线索看看statebackend是如何创建的
 
 - WindowOperator.java
+
+  
+
+  
 
 ```java
 public void open() throws Exception {
@@ -1088,6 +1096,7 @@ private List<StreamEdge> createChain(
 ```java
 private void setChaining(Map<Integer, byte[]> hashes, List<Map<Integer, byte[]>> legacyHashes, Map<Integer, List<Tuple2<byte[], byte[]>>> chainedOperatorHashes) {
 		for (Integer sourceNodeId : streamGraph.getSourceIDs()) {
+            //这里引用
 			createChain(sourceNodeId, sourceNodeId, hashes, legacyHashes, 0, chainedOperatorHashes);
 		}
 	}
@@ -1112,7 +1121,7 @@ private JobGraph createJobGraph() {
 		}
 
 		Map<Integer, List<Tuple2<byte[], byte[]>>> chainedOperatorHashes = new HashMap<>();
-
+		//这里引用
 		setChaining(hashes, legacyHashes, chainedOperatorHashes);
 
 		setPhysicalEdges();
@@ -1139,7 +1148,7 @@ private JobGraph createJobGraph() {
 
 
 ```java
-public static JobGraph createJobGraph(StreamGraph streamGraph, @Nullable JobID jobID) {
+public static JobGraph createJobGraph(StreamGraph streamGraph, @Nullable JobID jobID) {		//这里引用	
 		return new StreamingJobGraphGenerator(streamGraph, jobID).createJobGraph();
 	}
 ```
@@ -1157,7 +1166,7 @@ public JobGraph getJobGraph(@Nullable JobID jobID) {
 					+ "State checkpoints happen normally, but records in-transit during the snapshot will be lost upon failure. "
 					+ "\nThe user can force enable state checkpoints with the reduced guarantees by calling: env.enableCheckpointing(interval,true)");
 		}
-
+		//这里引用
 		return StreamingJobGraphGenerator.createJobGraph(this, jobID);
 	}
 ```
@@ -1168,6 +1177,7 @@ public JobGraph getJobGraph(@Nullable JobID jobID) {
 
 ```java
 public JobGraph getJobGraph() {
+    	//这里引用
 		return getJobGraph(null);
 	}
 ```
@@ -1178,6 +1188,7 @@ public JobGraph getJobGraph() {
 public static JobGraph getJobGraph(Configuration flinkConfig, FlinkPlan optPlan, List<URL> jarFiles, List<URL> classpaths, SavepointRestoreSettings savepointSettings) {
 		JobGraph job;
 		if (optPlan instanceof StreamingPlan) {
+            //这里引用
 			job = ((StreamingPlan) optPlan).getJobGraph();
 			job.setSavepointRestoreSettings(savepointSettings);
 		} else {
@@ -1205,6 +1216,7 @@ public static JobGraph getJobGraph(Configuration flinkConfig, FlinkPlan optPlan,
 public JobSubmissionResult run(FlinkPlan compiledPlan,
 			List<URL> libraries, List<URL> classpaths, ClassLoader classLoader, SavepointRestoreSettings savepointSettings)
 			throws ProgramInvocationException {
+    	//这里引用
 		JobGraph job = getJobGraph(flinkConfig, compiledPlan, libraries, classpaths, savepointSettings);
 		return submitJob(job, classLoader);
 	}
@@ -1253,6 +1265,7 @@ private static JobExecutionResult executeRemotely(StreamGraph streamGraph,
 		}
 
 		try {
+			//这里引用
 			return client.run(streamGraph, jarFiles, globalClasspaths, userCodeClassLoader, savepointRestoreSettings)
 				.getJobExecutionResult();
 		}
@@ -1276,6 +1289,8 @@ private static JobExecutionResult executeRemotely(StreamGraph streamGraph,
 ```
 
 到这里就很清楚这是调用`env.execute()`执行的地方
+
+
 
 
 
@@ -1445,3 +1460,1113 @@ protected  <S extends State> S getPartitionedState(StateDescriptor<S, ?> stateDe
 ```
 
 我们看到自定义的state最终也走到`getOrCreateKeyedState` 殊途同归
+
+到这里还有一个问题， 刚刚的SourceStreamTask在哪里创建实例？
+
+回想到上面`StreamGraph` 里面 `addNode` 方法，将这个类信息写入了`StreamNodes` 里面， 
+
+同时提供了一个方法获取里面的`StreamNode`
+
+```java
+public StreamNode getStreamNode(Integer vertexID) {
+		return streamNodes.get(vertexID);
+	}
+```
+
+我们来查查这个类的引用， 发现之前的`CreateJobVertex`， 有用到， 并且把这个类写入了`JobVertex`。
+
+那么到这里我们大概知道了，这个类信息会放到`JobGraph`中。
+
+我们来看看在什么地方调用·`getInvokableClassName`
+
+![1567767595571](C:\Users\host1\AppData\Roaming\Typora\typora-user-images\1567767595571.png)
+
+
+
+有两个地方， 分别来看一下
+
+- ExecutionGraphBuilder.java
+
+```java
+public static ExecutionGraph buildGraph(
+		@Nullable ExecutionGraph prior,
+		JobGraph jobGraph,
+		Configuration jobManagerConfig,
+		ScheduledExecutorService futureExecutor,
+		Executor ioExecutor,
+		SlotProvider slotProvider,
+		ClassLoader classLoader,
+		CheckpointRecoveryFactory recoveryFactory,
+		Time rpcTimeout,
+		RestartStrategy restartStrategy,
+		MetricGroup metrics,
+		BlobWriter blobWriter,
+		Time allocationTimeout,
+		Logger log,
+		ShuffleMaster<?> shuffleMaster,
+		PartitionTracker partitionTracker,
+		FailoverStrategy.Factory failoverStrategyFactory) throws JobExecutionException, JobException {
+
+		checkNotNull(jobGraph, "job graph cannot be null");
+
+		final String jobName = jobGraph.getName();
+		final JobID jobId = jobGraph.getJobID();
+
+		final JobInformation jobInformation = new JobInformation(
+			jobId,
+			jobName,
+			jobGraph.getSerializedExecutionConfig(),
+			jobGraph.getJobConfiguration(),
+			jobGraph.getUserJarBlobKeys(),
+			jobGraph.getClasspaths());
+
+		final int maxPriorAttemptsHistoryLength =
+				jobManagerConfig.getInteger(JobManagerOptions.MAX_ATTEMPTS_HISTORY_SIZE);
+
+		final PartitionReleaseStrategy.Factory partitionReleaseStrategyFactory =
+			PartitionReleaseStrategyFactoryLoader.loadPartitionReleaseStrategyFactory(jobManagerConfig);
+
+		// create a new execution graph, if none exists so far
+		final ExecutionGraph executionGraph;
+		try {
+			executionGraph = (prior != null) ? prior :
+				new ExecutionGraph(
+					jobInformation,
+					futureExecutor,
+					ioExecutor,
+					rpcTimeout,
+					restartStrategy,
+					maxPriorAttemptsHistoryLength,
+					failoverStrategyFactory,
+					slotProvider,
+					classLoader,
+					blobWriter,
+					allocationTimeout,
+					partitionReleaseStrategyFactory,
+					shuffleMaster,
+					partitionTracker,
+					jobGraph.getScheduleMode(),
+					jobGraph.getAllowQueuedScheduling());
+		} catch (IOException e) {
+			throw new JobException("Could not create the ExecutionGraph.", e);
+		}
+
+		// set the basic properties
+
+		try {
+			executionGraph.setJsonPlan(JsonPlanGenerator.generatePlan(jobGraph));
+		}
+		catch (Throwable t) {
+			log.warn("Cannot create JSON plan for job", t);
+			// give the graph an empty plan
+			executionGraph.setJsonPlan("{}");
+		}
+
+		// initialize the vertices that have a master initialization hook
+		// file output formats create directories here, input formats create splits
+
+		final long initMasterStart = System.nanoTime();
+		log.info("Running initialization on master for job {} ({}).", jobName, jobId);
+
+		for (JobVertex vertex : jobGraph.getVertices()) {
+            //这里调用，这里就是检查一下是否为空
+			String executableClass = vertex.getInvokableClassName();
+			if (executableClass == null || executableClass.isEmpty()) {
+				throw new JobSubmissionException(jobId,
+						"The vertex " + vertex.getID() + " (" + vertex.getName() + ") has no invokable class.");
+			}
+
+			try {
+                //
+				vertex.initializeOnMaster(classLoader);
+			}
+			catch (Throwable t) {
+					throw new JobExecutionException(jobId,
+							"Cannot initialize task '" + vertex.getName() + "': " + t.getMessage(), t);
+			}
+		}
+
+		log.info("Successfully ran initialization on master in {} ms.",
+				(System.nanoTime() - initMasterStart) / 1_000_000);
+
+		// topologically sort the job vertices and attach the graph to the existing one
+		List<JobVertex> sortedTopology = jobGraph.getVerticesSortedTopologicallyFromSources();
+		if (log.isDebugEnabled()) {
+			log.debug("Adding {} vertices from job graph {} ({}).", sortedTopology.size(), jobName, jobId);
+		}
+		executionGraph.attachJobGraph(sortedTopology);
+
+		if (log.isDebugEnabled()) {
+			log.debug("Successfully created execution graph from job graph {} ({}).", jobName, jobId);
+		}
+
+		// configure the state checkpointing
+		JobCheckpointingSettings snapshotSettings = jobGraph.getCheckpointingSettings();
+		if (snapshotSettings != null) {
+			List<ExecutionJobVertex> triggerVertices =
+					idToVertex(snapshotSettings.getVerticesToTrigger(), executionGraph);
+
+			List<ExecutionJobVertex> ackVertices =
+					idToVertex(snapshotSettings.getVerticesToAcknowledge(), executionGraph);
+
+			List<ExecutionJobVertex> confirmVertices =
+					idToVertex(snapshotSettings.getVerticesToConfirm(), executionGraph);
+
+			CompletedCheckpointStore completedCheckpoints;
+			CheckpointIDCounter checkpointIdCounter;
+			try {
+				int maxNumberOfCheckpointsToRetain = jobManagerConfig.getInteger(
+						CheckpointingOptions.MAX_RETAINED_CHECKPOINTS);
+
+				if (maxNumberOfCheckpointsToRetain <= 0) {
+					// warning and use 1 as the default value if the setting in
+					// state.checkpoints.max-retained-checkpoints is not greater than 0.
+					log.warn("The setting for '{} : {}' is invalid. Using default value of {}",
+							CheckpointingOptions.MAX_RETAINED_CHECKPOINTS.key(),
+							maxNumberOfCheckpointsToRetain,
+							CheckpointingOptions.MAX_RETAINED_CHECKPOINTS.defaultValue());
+
+					maxNumberOfCheckpointsToRetain = CheckpointingOptions.MAX_RETAINED_CHECKPOINTS.defaultValue();
+				}
+
+				completedCheckpoints = recoveryFactory.createCheckpointStore(jobId, maxNumberOfCheckpointsToRetain, classLoader);
+				checkpointIdCounter = recoveryFactory.createCheckpointIDCounter(jobId);
+			}
+			catch (Exception e) {
+				throw new JobExecutionException(jobId, "Failed to initialize high-availability checkpoint handler", e);
+			}
+
+			// Maximum number of remembered checkpoints
+			int historySize = jobManagerConfig.getInteger(WebOptions.CHECKPOINTS_HISTORY_SIZE);
+
+			CheckpointStatsTracker checkpointStatsTracker = new CheckpointStatsTracker(
+					historySize,
+					ackVertices,
+					snapshotSettings.getCheckpointCoordinatorConfiguration(),
+					metrics);
+
+			// load the state backend from the application settings
+			final StateBackend applicationConfiguredBackend;
+			final SerializedValue<StateBackend> serializedAppConfigured = snapshotSettings.getDefaultStateBackend();
+
+			if (serializedAppConfigured == null) {
+				applicationConfiguredBackend = null;
+			}
+			else {
+				try {
+					applicationConfiguredBackend = serializedAppConfigured.deserializeValue(classLoader);
+				} catch (IOException | ClassNotFoundException e) {
+					throw new JobExecutionException(jobId,
+							"Could not deserialize application-defined state backend.", e);
+				}
+			}
+
+			final StateBackend rootBackend;
+			try {
+				rootBackend = StateBackendLoader.fromApplicationOrConfigOrDefault(
+						applicationConfiguredBackend, jobManagerConfig, classLoader, log);
+			}
+			catch (IllegalConfigurationException | IOException | DynamicCodeLoadingException e) {
+				throw new JobExecutionException(jobId, "Could not instantiate configured state backend", e);
+			}
+
+			// instantiate the user-defined checkpoint hooks
+
+			final SerializedValue<MasterTriggerRestoreHook.Factory[]> serializedHooks = snapshotSettings.getMasterHooks();
+			final List<MasterTriggerRestoreHook<?>> hooks;
+
+			if (serializedHooks == null) {
+				hooks = Collections.emptyList();
+			}
+			else {
+				final MasterTriggerRestoreHook.Factory[] hookFactories;
+				try {
+					hookFactories = serializedHooks.deserializeValue(classLoader);
+				}
+				catch (IOException | ClassNotFoundException e) {
+					throw new JobExecutionException(jobId, "Could not instantiate user-defined checkpoint hooks", e);
+				}
+
+				final Thread thread = Thread.currentThread();
+				final ClassLoader originalClassLoader = thread.getContextClassLoader();
+				thread.setContextClassLoader(classLoader);
+
+				try {
+					hooks = new ArrayList<>(hookFactories.length);
+					for (MasterTriggerRestoreHook.Factory factory : hookFactories) {
+						hooks.add(MasterHooks.wrapHook(factory.create(), classLoader));
+					}
+				}
+				finally {
+					thread.setContextClassLoader(originalClassLoader);
+				}
+			}
+
+			final CheckpointCoordinatorConfiguration chkConfig = snapshotSettings.getCheckpointCoordinatorConfiguration();
+
+			executionGraph.enableCheckpointing(
+				chkConfig,
+				triggerVertices,
+				ackVertices,
+				confirmVertices,
+				hooks,
+				checkpointIdCounter,
+				completedCheckpoints,
+				rootBackend,
+				checkpointStatsTracker);
+		}
+
+		// create all the metrics for the Execution Graph
+
+		metrics.gauge(RestartTimeGauge.METRIC_NAME, new RestartTimeGauge(executionGraph));
+		metrics.gauge(DownTimeGauge.METRIC_NAME, new DownTimeGauge(executionGraph));
+		metrics.gauge(UpTimeGauge.METRIC_NAME, new UpTimeGauge(executionGraph));
+		metrics.gauge(NumberOfFullRestartsGauge.METRIC_NAME, new NumberOfFullRestartsGauge(executionGraph));
+
+		executionGraph.getFailoverStrategy().registerMetrics(metrics);
+
+		return executionGraph;
+	}
+
+```
+
+
+
+在看第二处
+
+- ExecutionJobVertex
+
+```java
+public Either<SerializedValue<TaskInformation>, PermanentBlobKey> getTaskInformationOrBlobKey() throws IOException {
+		// only one thread should offload the task information, so let's also let only one thread
+		// serialize the task information!
+		synchronized (stateMonitor) {
+			if (taskInformationOrBlobKey == null) {
+				final BlobWriter blobWriter = graph.getBlobWriter();
+				//这里调用，把class放到TaskInformation
+				final TaskInformation taskInformation = new TaskInformation(
+					jobVertex.getID(),
+					jobVertex.getName(),
+					parallelism,
+					maxParallelism,
+					jobVertex.getInvokableClassName(),
+					jobVertex.getConfiguration());
+				//序列化的TaskInformation， 或者是序列化的TaskInformation的一部分
+				taskInformationOrBlobKey = BlobWriter.serializeAndTryOffload(
+					taskInformation,
+					getJobId(),
+					blobWriter);
+			}
+
+			return taskInformationOrBlobKey;
+		}
+	}
+```
+
+再看这个方法引用
+
+
+
+- TaskDeploymentDescriptorFactory.java
+
+```java
+public static TaskDeploymentDescriptorFactory fromExecutionVertex(
+			ExecutionVertex executionVertex,
+			int attemptNumber) throws IOException {
+		ExecutionGraph executionGraph = executionVertex.getExecutionGraph();
+		return new TaskDeploymentDescriptorFactory(
+			executionVertex.getCurrentExecutionAttempt().getAttemptId(),
+			attemptNumber,
+			getSerializedJobInformation(executionGraph),
+//获取刚刚得到的序列化的TaskInformation， 或者是序列化的TaskInformation的一部分
+            getSerializedTaskInformation(executionVertex.getJobVertex().getTaskInformationOrBlobKey()),
+			executionGraph.getJobID(),
+			executionGraph.getScheduleMode().allowLazyDeployment(),
+			executionVertex.getParallelSubtaskIndex(),
+			executionVertex.getAllInputEdges());
+```
+
+
+
+看看它的引用
+
+- Execution.java
+
+```java
+public void deploy() throws JobException {
+		assertRunningInJobMasterMainThread();
+
+		final LogicalSlot slot  = assignedResource;
+
+		checkNotNull(slot, "In order to deploy the execution we first have to assign a resource via tryAssignResource.");
+
+		// Check if the TaskManager died in the meantime
+		// This only speeds up the response to TaskManagers failing concurrently to deployments.
+		// The more general check is the rpcTimeout of the deployment call
+		if (!slot.isAlive()) {
+			throw new JobException("Target slot (TaskManager) for deployment is no longer alive.");
+		}
+
+		// make sure exactly one deployment call happens from the correct state
+		// note: the transition from CREATED to DEPLOYING is for testing purposes only
+		ExecutionState previous = this.state;
+		if (previous == SCHEDULED || previous == CREATED) {
+			if (!transitionState(previous, DEPLOYING)) {
+				// race condition, someone else beat us to the deploying call.
+				// this should actually not happen and indicates a race somewhere else
+				throw new IllegalStateException("Cannot deploy task: Concurrent deployment call race.");
+			}
+		}
+		else {
+			// vertex may have been cancelled, or it was already scheduled
+			throw new IllegalStateException("The vertex must be in CREATED or SCHEDULED state to be deployed. Found state " + previous);
+		}
+
+		if (this != slot.getPayload()) {
+			throw new IllegalStateException(
+				String.format("The execution %s has not been assigned to the assigned slot.", this));
+		}
+
+		try {
+
+			// race double check, did we fail/cancel and do we need to release the slot?
+			if (this.state != DEPLOYING) {
+				slot.releaseSlot(new FlinkException("Actual state of execution " + this + " (" + state + ") does not match expected state DEPLOYING."));
+				return;
+			}
+
+			if (LOG.isInfoEnabled()) {
+				LOG.info(String.format("Deploying %s (attempt #%d) to %s", vertex.getTaskNameWithSubtaskIndex(),
+						attemptNumber, getAssignedResourceLocation()));
+			}
+			//这里面调用，class应该放在这个deployment里面
+			final TaskDeploymentDescriptor deployment = TaskDeploymentDescriptorFactory
+				.fromExecutionVertex(vertex, attemptNumber)
+				.createDeploymentDescriptor(
+					slot.getAllocationId(),
+					slot.getPhysicalSlotNumber(),
+					taskRestore,
+					producedPartitions.values());
+
+			// null taskRestore to let it be GC'ed
+			taskRestore = null;
+
+			final TaskManagerGateway taskManagerGateway = slot.getTaskManagerGateway();
+
+			final ComponentMainThreadExecutor jobMasterMainThreadExecutor =
+				vertex.getExecutionGraph().getJobMasterMainThreadExecutor();
+
+			// We run the submission in the future executor so that the serialization of large TDDs does not block
+			// the main thread and sync back to the main thread once submission is completed.
+			CompletableFuture.supplyAsync(() -> taskManagerGateway.submitTask(deployment, rpcTimeout), executor)
+				.thenCompose(Function.identity())
+				.whenCompleteAsync(
+					(ack, failure) -> {
+						// only respond to the failure case
+						if (failure != null) {
+							if (failure instanceof TimeoutException) {
+								String taskname = vertex.getTaskNameWithSubtaskIndex() + " (" + attemptId + ')';
+
+								markFailed(new Exception(
+									"Cannot deploy task " + taskname + " - TaskManager (" + getAssignedResourceLocation()
+										+ ") not responding after a rpcTimeout of " + rpcTimeout, failure));
+							} else {
+								markFailed(failure);
+							}
+						}
+					},
+					jobMasterMainThreadExecutor);
+
+		}
+		catch (Throwable t) {
+			markFailed(t);
+			ExceptionUtils.rethrow(t);
+		}
+	}
+```
+
+
+
+这段代码很熟悉，就是想taskmanager提交task
+
+但是我们还是没有看到怎么去构建SourceStreamTask的， 我们看看taskmanager拿到这个deployment会怎么做
+
+- TaskExecutor.java
+
+```java
+public CompletableFuture<Acknowledge> submitTask(
+			TaskDeploymentDescriptor tdd,
+			JobMasterId jobMasterId,
+			Time timeout) {
+
+		try {
+			final JobID jobId = tdd.getJobId();
+			final JobManagerConnection jobManagerConnection = jobManagerTable.get(jobId);
+
+			if (jobManagerConnection == null) {
+				final String message = "Could not submit task because there is no JobManager " +
+					"associated for the job " + jobId + '.';
+
+				log.debug(message);
+				throw new TaskSubmissionException(message);
+			}
+
+			if (!Objects.equals(jobManagerConnection.getJobMasterId(), jobMasterId)) {
+				final String message = "Rejecting the task submission because the job manager leader id " +
+					jobMasterId + " does not match the expected job manager leader id " +
+					jobManagerConnection.getJobMasterId() + '.';
+
+				log.debug(message);
+				throw new TaskSubmissionException(message);
+			}
+
+			if (!taskSlotTable.tryMarkSlotActive(jobId, tdd.getAllocationId())) {
+				final String message = "No task slot allocated for job ID " + jobId +
+					" and allocation ID " + tdd.getAllocationId() + '.';
+				log.debug(message);
+				throw new TaskSubmissionException(message);
+			}
+
+			// re-integrate offloaded data:
+			try {
+				tdd.loadBigData(blobCacheService.getPermanentBlobService());
+			} catch (IOException | ClassNotFoundException e) {
+				throw new TaskSubmissionException("Could not re-integrate offloaded TaskDeploymentDescriptor data.", e);
+			}
+
+			// deserialize the pre-serialized information
+			final JobInformation jobInformation;
+			final TaskInformation taskInformation;
+			try {
+				jobInformation = tdd.getSerializedJobInformation().deserializeValue(getClass().getClassLoader());
+                //反序列化得到taskInformation
+				taskInformation = tdd.getSerializedTaskInformation().deserializeValue(getClass().getClassLoader());
+			} catch (IOException | ClassNotFoundException e) {
+				throw new TaskSubmissionException("Could not deserialize the job or task information.", e);
+			}
+
+			if (!jobId.equals(jobInformation.getJobId())) {
+				throw new TaskSubmissionException(
+					"Inconsistent job ID information inside TaskDeploymentDescriptor (" +
+						tdd.getJobId() + " vs. " + jobInformation.getJobId() + ")");
+			}
+
+			TaskMetricGroup taskMetricGroup = taskManagerMetricGroup.addTaskForJob(
+				jobInformation.getJobId(),
+				jobInformation.getJobName(),
+				taskInformation.getJobVertexId(),
+				tdd.getExecutionAttemptId(),
+				taskInformation.getTaskName(),
+				tdd.getSubtaskIndex(),
+				tdd.getAttemptNumber());
+
+			InputSplitProvider inputSplitProvider = new RpcInputSplitProvider(
+				jobManagerConnection.getJobManagerGateway(),
+				taskInformation.getJobVertexId(),
+				tdd.getExecutionAttemptId(),
+				taskManagerConfiguration.getTimeout());
+
+			TaskManagerActions taskManagerActions = jobManagerConnection.getTaskManagerActions();
+			CheckpointResponder checkpointResponder = jobManagerConnection.getCheckpointResponder();
+			GlobalAggregateManager aggregateManager = jobManagerConnection.getGlobalAggregateManager();
+
+			LibraryCacheManager libraryCache = jobManagerConnection.getLibraryCacheManager();
+			ResultPartitionConsumableNotifier resultPartitionConsumableNotifier = jobManagerConnection.getResultPartitionConsumableNotifier();
+			PartitionProducerStateChecker partitionStateChecker = jobManagerConnection.getPartitionStateChecker();
+
+			final TaskLocalStateStore localStateStore = localStateStoresManager.localStateStoreForSubtask(
+				jobId,
+				tdd.getAllocationId(),
+				taskInformation.getJobVertexId(),
+				tdd.getSubtaskIndex());
+
+			final JobManagerTaskRestore taskRestore = tdd.getTaskRestore();
+
+			final TaskStateManager taskStateManager = new TaskStateManagerImpl(
+				jobId,
+				tdd.getExecutionAttemptId(),
+				localStateStore,
+				taskRestore,
+				checkpointResponder);
+
+			Task task = new Task(
+				jobInformation,
+                //这里将taskInformation传给了task
+				taskInformation,
+				tdd.getExecutionAttemptId(),
+				tdd.getAllocationId(),
+				tdd.getSubtaskIndex(),
+				tdd.getAttemptNumber(),
+				tdd.getProducedPartitions(),
+				tdd.getInputGates(),
+				tdd.getTargetSlotNumber(),
+				taskExecutorServices.getMemoryManager(),
+				taskExecutorServices.getIOManager(),
+				taskExecutorServices.getShuffleEnvironment(),
+				taskExecutorServices.getKvStateService(),
+				taskExecutorServices.getBroadcastVariableManager(),
+				taskExecutorServices.getTaskEventDispatcher(),
+				taskStateManager,
+				taskManagerActions,
+				inputSplitProvider,
+				checkpointResponder,
+				aggregateManager,
+				blobCacheService,
+				libraryCache,
+				fileCache,
+				taskManagerConfiguration,
+				taskMetricGroup,
+				resultPartitionConsumableNotifier,
+				partitionStateChecker,
+				getRpcService().getExecutor());
+
+			log.info("Received task {}.", task.getTaskInfo().getTaskNameWithSubtasks());
+
+			boolean taskAdded;
+
+			try {
+				taskAdded = taskSlotTable.addTask(task);
+			} catch (SlotNotFoundException | SlotNotActiveException e) {
+				throw new TaskSubmissionException("Could not submit task.", e);
+			}
+
+			if (taskAdded) {
+				task.startTaskThread();
+
+				setupResultPartitionBookkeeping(tdd, task.getTerminationFuture());
+				return CompletableFuture.completedFuture(Acknowledge.get());
+			} else {
+				final String message = "TaskManager already contains a task for id " +
+					task.getExecutionId() + '.';
+
+				log.debug(message);
+				throw new TaskSubmissionException(message);
+			}
+		} catch (TaskSubmissionException e) {
+			return FutureUtils.completedExceptionally(e);
+		}
+	}
+```
+
+
+
+在看看Task的构造方法
+
+- Task.java
+
+```java
+public Task(
+		JobInformation jobInformation,
+		TaskInformation taskInformation,
+		ExecutionAttemptID executionAttemptID,
+		AllocationID slotAllocationId,
+		int subtaskIndex,
+		int attemptNumber,
+		Collection<ResultPartitionDeploymentDescriptor> resultPartitionDeploymentDescriptors,
+		Collection<InputGateDeploymentDescriptor> inputGateDeploymentDescriptors,
+		int targetSlotNumber,
+		MemoryManager memManager,
+		IOManager ioManager,
+		ShuffleEnvironment<?, ?> shuffleEnvironment,
+		KvStateService kvStateService,
+		BroadcastVariableManager bcVarManager,
+		TaskEventDispatcher taskEventDispatcher,
+		TaskStateManager taskStateManager,
+		TaskManagerActions taskManagerActions,
+		InputSplitProvider inputSplitProvider,
+		CheckpointResponder checkpointResponder,
+		GlobalAggregateManager aggregateManager,
+		BlobCacheService blobService,
+		LibraryCacheManager libraryCache,
+		FileCache fileCache,
+		TaskManagerRuntimeInfo taskManagerConfig,
+		@Nonnull TaskMetricGroup metricGroup,
+		ResultPartitionConsumableNotifier resultPartitionConsumableNotifier,
+		PartitionProducerStateChecker partitionProducerStateChecker,
+		Executor executor) {
+
+		Preconditions.checkNotNull(jobInformation);
+		Preconditions.checkNotNull(taskInformation);
+
+		Preconditions.checkArgument(0 <= subtaskIndex, "The subtask index must be positive.");
+		Preconditions.checkArgument(0 <= attemptNumber, "The attempt number must be positive.");
+		Preconditions.checkArgument(0 <= targetSlotNumber, "The target slot number must be positive.");
+
+		this.taskInfo = new TaskInfo(
+				taskInformation.getTaskName(),
+				taskInformation.getMaxNumberOfSubtaks(),
+				subtaskIndex,
+				taskInformation.getNumberOfSubtasks(),
+				attemptNumber,
+				String.valueOf(slotAllocationId));
+
+		this.jobId = jobInformation.getJobId();
+		this.vertexId = taskInformation.getJobVertexId();
+		this.executionId  = Preconditions.checkNotNull(executionAttemptID);
+		this.allocationId = Preconditions.checkNotNull(slotAllocationId);
+		this.taskNameWithSubtask = taskInfo.getTaskNameWithSubtasks();
+		this.jobConfiguration = jobInformation.getJobConfiguration();
+		this.taskConfiguration = taskInformation.getTaskConfiguration();
+		this.requiredJarFiles = jobInformation.getRequiredJarFileBlobKeys();
+		this.requiredClasspaths = jobInformation.getRequiredClasspathURLs();
+    	//传给了nameOfInvokableClass成员
+		this.nameOfInvokableClass = taskInformation.getInvokableClassName();
+		this.serializedExecutionConfig = jobInformation.getSerializedExecutionConfig();
+
+		Configuration tmConfig = taskManagerConfig.getConfiguration();
+		this.taskCancellationInterval = tmConfig.getLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL);
+		this.taskCancellationTimeout = tmConfig.getLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT);
+
+		this.memoryManager = Preconditions.checkNotNull(memManager);
+		this.ioManager = Preconditions.checkNotNull(ioManager);
+		this.broadcastVariableManager = Preconditions.checkNotNull(bcVarManager);
+		this.taskEventDispatcher = Preconditions.checkNotNull(taskEventDispatcher);
+		this.taskStateManager = Preconditions.checkNotNull(taskStateManager);
+		this.accumulatorRegistry = new AccumulatorRegistry(jobId, executionId);
+
+		this.inputSplitProvider = Preconditions.checkNotNull(inputSplitProvider);
+		this.checkpointResponder = Preconditions.checkNotNull(checkpointResponder);
+		this.aggregateManager = Preconditions.checkNotNull(aggregateManager);
+		this.taskManagerActions = checkNotNull(taskManagerActions);
+
+		this.blobService = Preconditions.checkNotNull(blobService);
+		this.libraryCache = Preconditions.checkNotNull(libraryCache);
+		this.fileCache = Preconditions.checkNotNull(fileCache);
+		this.kvStateService = Preconditions.checkNotNull(kvStateService);
+		this.taskManagerConfig = Preconditions.checkNotNull(taskManagerConfig);
+
+		this.metrics = metricGroup;
+
+		this.partitionProducerStateChecker = Preconditions.checkNotNull(partitionProducerStateChecker);
+		this.executor = Preconditions.checkNotNull(executor);
+
+		// create the reader and writer structures
+
+		final String taskNameWithSubtaskAndId = taskNameWithSubtask + " (" + executionId + ')';
+
+		final ShuffleIOOwnerContext taskShuffleContext = shuffleEnvironment
+			.createShuffleIOOwnerContext(taskNameWithSubtaskAndId, executionId, metrics.getIOMetricGroup());
+
+		// produced intermediate result partitions
+		final ResultPartitionWriter[] resultPartitionWriters = shuffleEnvironment.createResultPartitionWriters(
+			taskShuffleContext,
+			resultPartitionDeploymentDescriptors).toArray(new ResultPartitionWriter[] {});
+
+		this.consumableNotifyingPartitionWriters = ConsumableNotifyingResultPartitionWriterDecorator.decorate(
+			resultPartitionDeploymentDescriptors,
+			resultPartitionWriters,
+			this,
+			jobId,
+			resultPartitionConsumableNotifier);
+
+		// consumed intermediate result partitions
+		final InputGate[] gates = shuffleEnvironment.createInputGates(
+			taskShuffleContext,
+			this,
+			inputGateDeploymentDescriptors).toArray(new InputGate[] {});
+
+		this.inputGates = new InputGate[gates.length];
+		int counter = 0;
+		for (InputGate gate : gates) {
+			inputGates[counter++] = new InputGateWithMetrics(gate, metrics.getIOMetricGroup().getNumBytesInCounter());
+		}
+
+		if (shuffleEnvironment instanceof NettyShuffleEnvironment) {
+			//noinspection deprecation
+			((NettyShuffleEnvironment) shuffleEnvironment)
+				.registerLegacyNetworkMetrics(metrics.getIOMetricGroup(), resultPartitionWriters, gates);
+		}
+
+		invokableHasBeenCanceled = new AtomicBoolean(false);
+
+		// finally, create the executing thread, but do not start it
+		executingThread = new Thread(TASK_THREADS_GROUP, this, taskNameWithSubtask);
+	}
+```
+
+这个`nameOfInvokableClass`在哪里用到呢
+
+```java
+private void doRun() {
+		// ----------------------------
+		//  Initial State transition
+		// ----------------------------
+		while (true) {
+			ExecutionState current = this.executionState;
+			if (current == ExecutionState.CREATED) {
+				if (transitionState(ExecutionState.CREATED, ExecutionState.DEPLOYING)) {
+					// success, we can start our work
+					break;
+				}
+			}
+			else if (current == ExecutionState.FAILED) {
+				// we were immediately failed. tell the TaskManager that we reached our final state
+				notifyFinalState();
+				if (metrics != null) {
+					metrics.close();
+				}
+				return;
+			}
+			else if (current == ExecutionState.CANCELING) {
+				if (transitionState(ExecutionState.CANCELING, ExecutionState.CANCELED)) {
+					// we were immediately canceled. tell the TaskManager that we reached our final state
+					notifyFinalState();
+					if (metrics != null) {
+						metrics.close();
+					}
+					return;
+				}
+			}
+			else {
+				if (metrics != null) {
+					metrics.close();
+				}
+				throw new IllegalStateException("Invalid state for beginning of operation of task " + this + '.');
+			}
+		}
+
+		// all resource acquisitions and registrations from here on
+		// need to be undone in the end
+		Map<String, Future<Path>> distributedCacheEntries = new HashMap<>();
+		AbstractInvokable invokable = null;
+
+		try {
+			// ----------------------------
+			//  Task Bootstrap - We periodically
+			//  check for canceling as a shortcut
+			// ----------------------------
+
+			// activate safety net for task thread
+			LOG.info("Creating FileSystem stream leak safety net for task {}", this);
+			FileSystemSafetyNet.initializeSafetyNetForThread();
+
+			blobService.getPermanentBlobService().registerJob(jobId);
+
+			// first of all, get a user-code classloader
+			// this may involve downloading the job's JAR files and/or classes
+			LOG.info("Loading JAR files for task {}.", this);
+
+			userCodeClassLoader = createUserCodeClassloader();
+			final ExecutionConfig executionConfig = serializedExecutionConfig.deserializeValue(userCodeClassLoader);
+
+			if (executionConfig.getTaskCancellationInterval() >= 0) {
+				// override task cancellation interval from Flink config if set in ExecutionConfig
+				taskCancellationInterval = executionConfig.getTaskCancellationInterval();
+			}
+
+			if (executionConfig.getTaskCancellationTimeout() >= 0) {
+				// override task cancellation timeout from Flink config if set in ExecutionConfig
+				taskCancellationTimeout = executionConfig.getTaskCancellationTimeout();
+			}
+
+			if (isCanceledOrFailed()) {
+				throw new CancelTaskException();
+			}
+
+			// ----------------------------------------------------------------
+			// register the task with the network stack
+			// this operation may fail if the system does not have enough
+			// memory to run the necessary data exchanges
+			// the registration must also strictly be undone
+			// ----------------------------------------------------------------
+
+			LOG.info("Registering task at network: {}.", this);
+
+			setupPartitionsAndGates(consumableNotifyingPartitionWriters, inputGates);
+
+			for (ResultPartitionWriter partitionWriter : consumableNotifyingPartitionWriters) {
+				taskEventDispatcher.registerPartition(partitionWriter.getPartitionId());
+			}
+
+			// next, kick off the background copying of files for the distributed cache
+			try {
+				for (Map.Entry<String, DistributedCache.DistributedCacheEntry> entry :
+						DistributedCache.readFileInfoFromConfig(jobConfiguration)) {
+					LOG.info("Obtaining local cache file for '{}'.", entry.getKey());
+					Future<Path> cp = fileCache.createTmpFile(entry.getKey(), entry.getValue(), jobId, executionId);
+					distributedCacheEntries.put(entry.getKey(), cp);
+				}
+			}
+			catch (Exception e) {
+				throw new Exception(
+					String.format("Exception while adding files to distributed cache of task %s (%s).", taskNameWithSubtask, executionId), e);
+			}
+
+			if (isCanceledOrFailed()) {
+				throw new CancelTaskException();
+			}
+
+			// ----------------------------------------------------------------
+			//  call the user code initialization methods
+			// ----------------------------------------------------------------
+
+			TaskKvStateRegistry kvStateRegistry = kvStateService.createKvStateTaskRegistry(jobId, getJobVertexId());
+			//创建了environment
+			Environment env = new RuntimeEnvironment(
+				jobId,
+				vertexId,
+				executionId,
+				executionConfig,
+				taskInfo,
+                //taskinformation里面的config
+				jobConfiguration,
+				taskConfiguration,
+				userCodeClassLoader,
+				memoryManager,
+				ioManager,
+				broadcastVariableManager,
+				taskStateManager,
+				aggregateManager,
+				accumulatorRegistry,
+				kvStateRegistry,
+				inputSplitProvider,
+				distributedCacheEntries,
+				consumableNotifyingPartitionWriters,
+				inputGates,
+				taskEventDispatcher,
+				checkpointResponder,
+				taskManagerConfig,
+				metrics,
+				this);
+
+			// Make sure the user code classloader is accessible thread-locally.
+			// We are setting the correct context class loader before instantiating the invokable
+			// so that it is available to the invokable during its entire lifetime.
+			executingThread.setContextClassLoader(userCodeClassLoader);
+
+			// now load and instantiate the task's invokable code
+            //这里用到了
+            //看名字就知道这个方法是要实例化我们的class了
+			invokable = loadAndInstantiateInvokable(userCodeClassLoader, nameOfInvokableClass, env);
+
+			// ----------------------------------------------------------------
+			//  actual task core work
+			// ----------------------------------------------------------------
+
+			// we must make strictly sure that the invokable is accessible to the cancel() call
+			// by the time we switched to running.
+			this.invokable = invokable;
+
+			// switch to the RUNNING state, if that fails, we have been canceled/failed in the meantime
+			if (!transitionState(ExecutionState.DEPLOYING, ExecutionState.RUNNING)) {
+				throw new CancelTaskException();
+			}
+
+			// notify everyone that we switched to running
+			taskManagerActions.updateTaskExecutionState(new TaskExecutionState(jobId, executionId, ExecutionState.RUNNING));
+
+			// make sure the user code classloader is accessible thread-locally
+			executingThread.setContextClassLoader(userCodeClassLoader);
+
+			// run the invokable
+			invokable.invoke();
+
+			// make sure, we enter the catch block if the task leaves the invoke() method due
+			// to the fact that it has been canceled
+			if (isCanceledOrFailed()) {
+				throw new CancelTaskException();
+			}
+
+			// ----------------------------------------------------------------
+			//  finalization of a successful execution
+			// ----------------------------------------------------------------
+
+			// finish the produced partitions. if this fails, we consider the execution failed.
+			for (ResultPartitionWriter partitionWriter : consumableNotifyingPartitionWriters) {
+				if (partitionWriter != null) {
+					partitionWriter.finish();
+				}
+			}
+
+			// try to mark the task as finished
+			// if that fails, the task was canceled/failed in the meantime
+			if (!transitionState(ExecutionState.RUNNING, ExecutionState.FINISHED)) {
+				throw new CancelTaskException();
+			}
+		}
+		catch (Throwable t) {
+
+			// unwrap wrapped exceptions to make stack traces more compact
+			if (t instanceof WrappingRuntimeException) {
+				t = ((WrappingRuntimeException) t).unwrap();
+			}
+
+			// ----------------------------------------------------------------
+			// the execution failed. either the invokable code properly failed, or
+			// an exception was thrown as a side effect of cancelling
+			// ----------------------------------------------------------------
+
+			try {
+				// check if the exception is unrecoverable
+				if (ExceptionUtils.isJvmFatalError(t) ||
+						(t instanceof OutOfMemoryError && taskManagerConfig.shouldExitJvmOnOutOfMemoryError())) {
+
+					// terminate the JVM immediately
+					// don't attempt a clean shutdown, because we cannot expect the clean shutdown to complete
+					try {
+						LOG.error("Encountered fatal error {} - terminating the JVM", t.getClass().getName(), t);
+					} finally {
+						Runtime.getRuntime().halt(-1);
+					}
+				}
+
+				// transition into our final state. we should be either in DEPLOYING, RUNNING, CANCELING, or FAILED
+				// loop for multiple retries during concurrent state changes via calls to cancel() or
+				// to failExternally()
+				while (true) {
+					ExecutionState current = this.executionState;
+
+					if (current == ExecutionState.RUNNING || current == ExecutionState.DEPLOYING) {
+						if (t instanceof CancelTaskException) {
+							if (transitionState(current, ExecutionState.CANCELED)) {
+								cancelInvokable(invokable);
+								break;
+							}
+						}
+						else {
+							if (transitionState(current, ExecutionState.FAILED, t)) {
+								// proper failure of the task. record the exception as the root cause
+								failureCause = t;
+								cancelInvokable(invokable);
+
+								break;
+							}
+						}
+					}
+					else if (current == ExecutionState.CANCELING) {
+						if (transitionState(current, ExecutionState.CANCELED)) {
+							break;
+						}
+					}
+					else if (current == ExecutionState.FAILED) {
+						// in state failed already, no transition necessary any more
+						break;
+					}
+					// unexpected state, go to failed
+					else if (transitionState(current, ExecutionState.FAILED, t)) {
+						LOG.error("Unexpected state in task {} ({}) during an exception: {}.", taskNameWithSubtask, executionId, current);
+						break;
+					}
+					// else fall through the loop and
+				}
+			}
+			catch (Throwable tt) {
+				String message = String.format("FATAL - exception in exception handler of task %s (%s).", taskNameWithSubtask, executionId);
+				LOG.error(message, tt);
+				notifyFatalError(message, tt);
+			}
+		}
+		finally {
+			try {
+				LOG.info("Freeing task resources for {} ({}).", taskNameWithSubtask, executionId);
+
+				// clear the reference to the invokable. this helps guard against holding references
+				// to the invokable and its structures in cases where this Task object is still referenced
+				this.invokable = null;
+
+				// stop the async dispatcher.
+				// copy dispatcher reference to stack, against concurrent release
+				ExecutorService dispatcher = this.asyncCallDispatcher;
+				if (dispatcher != null && !dispatcher.isShutdown()) {
+					dispatcher.shutdownNow();
+				}
+
+				// free the network resources
+				releaseNetworkResources();
+
+				// free memory resources
+				if (invokable != null) {
+					memoryManager.releaseAll(invokable);
+				}
+
+				// remove all of the tasks library resources
+				libraryCache.unregisterTask(jobId, executionId);
+				fileCache.releaseJob(jobId, executionId);
+				blobService.getPermanentBlobService().releaseJob(jobId);
+
+				// close and de-activate safety net for task thread
+				LOG.info("Ensuring all FileSystem streams are closed for task {}", this);
+				FileSystemSafetyNet.closeSafetyNetAndGuardedResourcesForThread();
+
+				notifyFinalState();
+			}
+			catch (Throwable t) {
+				// an error in the resource cleanup is fatal
+				String message = String.format("FATAL - exception in resource cleanup of task %s (%s).", taskNameWithSubtask, executionId);
+				LOG.error(message, t);
+				notifyFatalError(message, t);
+			}
+
+			// un-register the metrics at the end so that the task may already be
+			// counted as finished when this happens
+			// errors here will only be logged
+			try {
+				metrics.close();
+			}
+			catch (Throwable t) {
+				LOG.error("Error during metrics de-registration of task {} ({}).", taskNameWithSubtask, executionId, t);
+			}
+		}
+	}
+
+```
+
+step in
+
+```java
+	private static AbstractInvokable loadAndInstantiateInvokable(
+		ClassLoader classLoader,
+		String className,
+		Environment environment) throws Throwable {
+
+		final Class<? extends AbstractInvokable> invokableClass;
+		try {
+            //没错就是在这里实例化的
+			invokableClass = Class.forName(className, true, classLoader)
+				.asSubclass(AbstractInvokable.class);
+		} catch (Throwable t) {
+			throw new Exception("Could not load the task's invokable class.", t);
+		}
+
+		Constructor<? extends AbstractInvokable> statelessCtor;
+
+		try {
+			statelessCtor = invokableClass.getConstructor(Environment.class);
+		} catch (NoSuchMethodException ee) {
+			throw new FlinkException("Task misses proper constructor", ee);
+		}
+
+		// instantiate the class
+		try {
+			//noinspection ConstantConditions  --> cannot happen
+			return statelessCtor.newInstance(environment);
+		} catch (InvocationTargetException e) {
+			// directly forward exceptions from the eager initialization
+			throw e.getTargetException();
+		} catch (Exception e) {
+			throw new FlinkException("Could not instantiate the task's invokable class.", e);
+		}
+	}
+```
+
+上面代码我们看到在实例化`StreamTask`之前先创建了一个`RuntimeEnvironment`, 传入config， 这个config又是从`TaskInformation`里面拿到的， 那么`TaskInformation`里的config哪里来，回到创建的地方，
+
+```java
+public Either<SerializedValue<TaskInformation>, PermanentBlobKey> getTaskInformationOrBlobKey() throws IOException {
+                ...
+				final TaskInformation taskInformation = new TaskInformation(
+					jobVertex.getID(),
+					jobVertex.getName(),
+					parallelism,
+					maxParallelism,
+					jobVertex.getInvokableClassName(),
+                    //从jobvertex拿到
+					jobVertex.getConfiguration());
+				...
+	}
+```
+
+
+
+这里的configuration哪来， 从buildGraph开始探索一下
+
